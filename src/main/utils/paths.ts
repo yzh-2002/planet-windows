@@ -10,8 +10,8 @@ const isDev = !app.isPackaged
  * 获取当前平台的 Kubo 二进制路径
  */
 export function getKuboPath(): string {
-  const platform = os.platform()  // 'darwin' | 'win32' | 'linux'
-  const arch = os.arch()            // 'arm64' | 'x64' | 'ia32'
+  const platform = os.platform() // 'darwin' | 'win32' | 'linux'
+  const arch = os.arch() // 'arm64' | 'x64' | 'ia32'
 
   // 构建文件名
   let filename: string
@@ -38,7 +38,7 @@ export function getKuboPath(): string {
 export function validateKuboPath(): { valid: boolean; path: string; error?: string } {
   const kuboPath = getKuboPath()
   const platform = os.platform()
-  
+
   if (!fs.existsSync(kuboPath)) {
     return {
       valid: false,

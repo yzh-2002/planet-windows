@@ -1,6 +1,5 @@
 import { ElectronAPI } from '@electron-toolkit/preload'
 
-
 export interface PlanetAPI {
   ipfs: {
     setup: () => Promise<void>

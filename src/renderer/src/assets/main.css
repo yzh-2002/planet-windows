@@ -1,6 +1,16 @@
 @import "tailwindcss";
 @import './base.css';
 
+/* 确保根元素撑满全屏 */
+html, body, #root {
+  margin: 0;
+  padding: 0;
+  width: 100vw; /* 使用 vw 确保宽度 */
+  height: 100vh; /* 使用 vh 确保高度 */
+  overflow: hidden;
+  background-color: white; /* 确保背景色一致 */
+}
+
 body {
   display: flex;
   align-items: center;

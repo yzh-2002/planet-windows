@@ -10,7 +10,7 @@ export default defineConfig({
         '@main': resolve('src/main'),
         '@ipfs': resolve('src/main/ipfs'),
         '@data': resolve('src/main/data'),
-        '@services': resolve('src/main/services'),
+        '@services': resolve('src/main/services')
       }
     }
   },
@@ -21,7 +21,7 @@ export default defineConfig({
         '@renderer': resolve('src/renderer/src'),
         '@store': resolve('src/renderer/src/store'),
         '@pages': resolve('src/renderer/src/pages'),
-        '@components': resolve('src/renderer/src/components'),
+        '@components': resolve('src/renderer/src/components')
       }
     },
     plugins: [react(), tailwindcss()]

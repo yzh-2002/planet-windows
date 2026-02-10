@@ -7,6 +7,9 @@ import { getKuboPath, getIPFSRepoPath } from './utils/paths'
 let mainWindow: BrowserWindow | null = null
 
 function createWindow(): void {
+
+  const preloadPath = join(__dirname, '../preload/index.js')
+  console.log('Preload path:', preloadPath)
   // Create the browser window.
   mainWindow = new BrowserWindow({
     width: 1200,
@@ -16,12 +19,12 @@ function createWindow(): void {
     title: 'Planet',
     show: false,
     autoHideMenuBar: true,
-    ...(process.platform === 'linux' ? { icon } : {}),
+    ...(process.platform === 'win32' ? { icon } : {}),
     webPreferences: {
-      preload: join(__dirname, '../preload/index.js'),
+      preload: preloadPath,
       sandbox: false,
-      contextIsolation: true,  // 启用上下文隔离，preload 脚本使用 contextBridge
-      webviewTag: true,   // 后续文章渲染需要用 webview
+      contextIsolation: true, // 启用上下文隔离，preload 脚本使用 contextBridge
+      webviewTag: true // 后续文章渲染需要用 webview
     }
   })
 
@@ -47,7 +50,7 @@ let tray: Tray | null = null
 
 function createTray() {
   // 用一个简单的 16x16 图标，后续替换为正式图标
-  const icon = nativeImage.createEmpty()  // 临时用空图标
+  const icon = nativeImage.createEmpty() // 临时用空图标
   tray = new Tray(icon)
   tray.setToolTip('Planet')
   const contextMenu = Menu.buildFromTemplate([
@@ -55,7 +58,7 @@ function createTray() {
     { type: 'separator' },
     { label: 'IPFS Status', enabled: false },
     { type: 'separator' },
-    { label: 'Quit', click: () => app.quit() },
+    { label: 'Quit', click: () => app.quit() }
   ])
   tray.setContextMenu(contextMenu)
   tray.on('click', () => mainWindow?.show())
@@ -66,12 +69,29 @@ function createMenu() {
     {
       label: 'File',
       submenu: [
-        { label: 'New Planet...', accelerator: 'CmdOrCtrl+N', click: () => { /* TODO */ } },
-        { label: 'Follow Planet...', click: () => { /* TODO */ } },
+        {
+          label: 'New Planet...',
+          accelerator: 'CmdOrCtrl+N',
+          click: () => {
+            /* TODO */
+          }
+        },
+        {
+          label: 'Follow Planet...',
+          click: () => {
+            /* TODO */
+          }
+        },
         { type: 'separator' },
-        { label: 'Open IPFS Resource...', accelerator: 'CmdOrCtrl+O', click: () => { /* TODO */ } },
+        {
+          label: 'Open IPFS Resource...',
+          accelerator: 'CmdOrCtrl+O',
+          click: () => {
+            /* TODO */
+          }
+        },
         { type: 'separator' },
-        { label: 'Quit', accelerator: 'CmdOrCtrl+Q', role: 'quit' },
+        { label: 'Quit', accelerator: 'CmdOrCtrl+Q', role: 'quit' }
       ]
     },
     {
@@ -83,7 +103,7 @@ function createMenu() {
         { role: 'cut' },
         { role: 'copy' },
         { role: 'paste' },
-        { role: 'selectAll' },
+        { role: 'selectAll' }
       ]
     },
     {
@@ -94,13 +114,18 @@ function createMenu() {
         { type: 'separator' },
         { role: 'zoomIn' },
         { role: 'zoomOut' },
-        { role: 'resetZoom' },
+        { role: 'resetZoom' }
       ]
     },
     {
       label: 'Help',
       submenu: [
-        { label: 'About Planet', click: () => { /* TODO */ } },
+        {
+          label: 'About Planet',
+          click: () => {
+            /* TODO */
+          }
+        }
       ]
     }
   ]
@@ -110,13 +135,21 @@ function createMenu() {
 
 function registerIpcHandlers() {
   // IPFS — Phase 1 再实现具体逻辑
-  ipcMain.handle('ipfs:setup', async () => { console.log('TODO: ipfs setup') })
-  ipcMain.handle('ipfs:launch', async () => { console.log('TODO: ipfs launch') })
-  ipcMain.handle('ipfs:shutdown', async () => { console.log('TODO: ipfs shutdown') })
+  ipcMain.handle('ipfs:setup', async () => {
+    console.log('TODO: ipfs setup')
+  })
+  ipcMain.handle('ipfs:launch', async () => {
+    console.log('TODO: ipfs launch')
+  })
+  ipcMain.handle('ipfs:shutdown', async () => {
+    console.log('TODO: ipfs shutdown')
+  })
   ipcMain.handle('ipfs:getState', async () => {
     return { online: false, apiPort: 5981, gatewayPort: 18181, swarmPort: 4001 }
   })
-  ipcMain.handle('ipfs:gc', async () => { console.log('TODO: ipfs gc') })
+  ipcMain.handle('ipfs:gc', async () => {
+    console.log('TODO: ipfs gc')
+  })
 
   // Planet — Phase 2 再实现
   ipcMain.handle('planet:list', async () => [])
@@ -162,6 +195,10 @@ app.whenReady().then(() => {
   createTray()
   createMenu()
   registerIpcHandlers()
+
+  ipcMain.handle("get-desktop-path", () => {
+    return app.getPath('desktop')
+  })
 
   app.on('activate', function () {
     // On macOS it's common to re-create a window in the app when the
