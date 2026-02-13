@@ -3,10 +3,26 @@ use tauri::{AppHandle, Manager};
 
 /// 获取 Kubo 可执行文件路径（跨平台）
 pub fn get_kubo_path(app: &AppHandle) -> PathBuf {
-    let resource_dir = app
-        .path()
-        .resource_dir()
-        .expect("Failed to get resource dir");
+    // 在开发模式下，使用 target/debug/resources
+    // 在生产模式下，使用 app.path().resource_dir()
+    let resource_dir = if cfg!(debug_assertions) {
+        // 开发模式：target/debug/resources
+        std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(|p| p.to_path_buf()))
+            .map(|exe_dir| exe_dir.join("resources"))
+            .unwrap_or_else(|| {
+                // 如果上面的方法失败，尝试从当前工作目录推断
+                std::env::current_dir()
+                    .unwrap_or_default()
+                    .join("target/debug/resources")
+            })
+    } else {
+        // 生产模式：使用 Tauri 的资源目录
+        app.path()
+            .resource_dir()
+            .expect("Failed to get resource dir")
+    };
 
     #[cfg(target_os = "windows")]
     {

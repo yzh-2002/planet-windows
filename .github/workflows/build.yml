@@ -1,16 +1,18 @@
 name: Build Tauri App
 
 on:
+  # 只在推送 tag 时触发 release
   push:
-    branches: [main]
-  pull_request:
-    branches: [main]
+    tags:
+      - 'v*'  # 例如 v0.1.0, v1.0.0
+  # 保留手动触发
   workflow_dispatch:
 
 jobs:
   build:
     permissions:
       contents: write
+    
     strategy:
       fail-fast: false
       matrix:
@@ -62,8 +64,8 @@ jobs:
         with:
           projectPath: .
           args: --target ${{ matrix.target }}
-          tagName: v__VERSION__
-          releaseName: 'Planet Desktop v__VERSION__'
+          tagName: ${{ github.ref_name }}  # 使用 tag 名称
+          releaseName: 'Planet Desktop ${{ github.ref_name }}'
           releaseBody: 'See the assets to download this version and install.'
           releaseDraft: true
           prerelease: false
