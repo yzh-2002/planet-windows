@@ -1,8 +1,7 @@
-import React, { useState } from 'react'
+import { useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { Sidebar } from './components/Sidebar/Sidebar'
 import { ArticleList } from './components/ArticleList/ArticleList'
-import { ArticleDetail } from './components/ArticleDetail/ArticleDetail'
 
 function App() {
   const [kuboPath, setKuboPath] = useState<string>('')
