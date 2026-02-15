@@ -11,13 +11,13 @@ mod store;
 mod template;
 mod keystore;
 
-use std::sync::Arc;
-use tokio::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tracing::info;
 use tracing_subscriber;
 use tauri::Manager;
 
 use ipfs::state::{IpfsState, IpfsStateHandle};
+use store::{PlanetStore, PlanetStoreHandle};
 
 fn main() {
     // 初始化日志 - 简化版本，避免 with_env_filter 错误
@@ -40,17 +40,42 @@ fn main() {
             commands::ipfs::ipfs_shutdown,
             commands::ipfs::ipfs_gc,
             commands::ipfs::ipfs_refresh_status,
+            // Phase 2: Planet Commands ← 新增
+            commands::planet::planet_get_state,
+            commands::planet::planet_list,
+            commands::planet::planet_create,
+            commands::planet::planet_get,
+            commands::planet::planet_update,
+            commands::planet::planet_delete,
+            // Phase 2: Article Commands ← 新增
+            commands::article::article_list,
+            commands::article::article_create,
+            commands::article::article_get,
+            commands::article::article_update,
+            commands::article::article_delete,
+            // Phase 2: Draft Commands ← 新增
+            commands::article::draft_list,
+            commands::article::draft_create,
+            commands::article::draft_save,
+            commands::article::draft_delete,
+            commands::article::draft_publish,
         ])
         // 应用启动钩子
         .setup(move |app| {
             let app_handle = app.handle().clone(); 
             
             // 创建 IPFS 全局状态
-            let ipfs_state: IpfsStateHandle = Arc::new(Mutex::new(IpfsState::new(app_handle.clone())));
-            
+            let ipfs_state: IpfsStateHandle = Arc::new(tokio::sync::Mutex::new(IpfsState::new(app_handle.clone())));
+            // 创建 PlanetStore（Phase 2 新增）
+            let mut planet_store = PlanetStore::new();
+            if let Err(e) = planet_store.load(&app_handle) {
+                tracing::error!("Failed to load planets: {}", e);
+            }
+            let planet_store_handle: PlanetStoreHandle = Arc::new(Mutex::new(planet_store));
+
             // 注入全局状态
             app.manage(ipfs_state.clone());
-            
+            app.manage(planet_store_handle.clone());
             let state = ipfs_state.clone();
 
             // 异步启动 IPFS daemon
