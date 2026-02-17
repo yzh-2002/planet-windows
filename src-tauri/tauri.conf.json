@@ -36,7 +36,8 @@
       "icons/icon.ico"
     ],
     "resources": [
-      "resources/bin/*"
+      "resources/bin/*",
+      "resources/templates/**/*"
     ]
   }
 }

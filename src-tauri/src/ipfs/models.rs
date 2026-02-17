@@ -15,6 +15,10 @@ pub struct IpfsVersion {
     pub repo: String,
     #[serde(rename = "System")]
     pub system: String,
+    #[serde(rename = "Commit", default)]
+    pub commit: String,
+    #[serde(rename = "Golang", default)]
+    pub golang: String,
 }
 
 /// IPFS 仓库状态 — 对应 /api/v0/repo/stat
@@ -41,6 +45,12 @@ pub struct IpfsId {
     pub public_key: String,
     #[serde(rename = "Addresses")]
     pub addresses: Vec<String>,
+    #[serde(rename = "AgentVersion", default)]
+    pub agent_version: String,
+    #[serde(rename = "ProtocolVersion", default)]
+    pub protocol_version: String,
+    #[serde(rename = "Protocols", default)]
+    pub protocols: Vec<String>,
 }
 
 /// IPFS Swarm Peers — 对应 /api/v0/swarm/peers

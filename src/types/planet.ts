@@ -9,7 +9,7 @@ export interface MyPlanet {
     domain?: string
     author_name?: string
     created: string
-    ipns: string
+    ipns?: string
     updated: string
     template_name: string
     last_published?: string
@@ -20,6 +20,13 @@ export interface MyPlanet {
     telegram_username?: string
     mastodon_username?: string
     discord_link?: string
+    // Filebase 集成
+    filebase_enabled?: boolean
+    filebase_pin_name?: string
+    filebase_api_token?: string
+    // Pinnable 集成
+    pinnable_enabled?: boolean
+    pinnable_api_endpoint?: string
   }
   
   export interface FollowingPlanet {

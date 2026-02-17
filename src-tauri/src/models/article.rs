@@ -4,11 +4,14 @@ use std::path::PathBuf;
 use std::fs;
 use uuid::Uuid;
 use chrono::{DateTime, Utc};
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use tracing::{debug, error, info};
 use tauri::AppHandle;
 
 use crate::models::planet::MyPlanet;
+use crate::helpers::markdown::render_markdown_html;
+use crate::helpers::paths;
+use crate::template::Template;
 
 // ============================================================
 // ArticleType 枚举
@@ -348,5 +351,82 @@ impl From<&MyArticle> for PublicArticle {
             tags: article.tags.clone(),
             pinned: article.pinned,
         }
+    }
+}
+
+impl MyArticle {
+    /// 将文章渲染为静态 HTML 文件
+    ///
+    /// 对标 Swift MyArticleModel.savePublic()
+    /// 
+    /// **注意**：实际实现需要传入 `app: &AppHandle` 参数用于路径获取。
+    pub fn save_public(
+        &mut self,
+        planet: &MyPlanet,
+        template: &Template,
+        app: &AppHandle,
+    ) -> Result<()> {
+        // 构建 public 目录路径
+        // 注意：planet.public_base_path() 方法将在 Step 5 中实现
+        // 这里先直接构建路径
+        let public_path = paths::get_data_path(app).join("Public");
+        std::fs::create_dir_all(&public_path).ok();
+        let planet_public_path = public_path.join(planet.id.to_string());
+        let public_base = planet_public_path.join(self.id.to_string());
+
+        // 1. 创建 public 目录
+        fs::create_dir_all(&public_base)?;
+
+        // 2. Markdown → HTML
+        // 注意：MyArticle 结构体中没有 content_rendered 字段，需要在渲染时计算
+        let content_html = if !self.content.is_empty() {
+            render_markdown_html(&self.content)
+        } else {
+            String::new()
+        };
+
+        // 3. 用模板渲染文章页面
+        let mut context = tera::Context::new();
+        
+        // 创建包含 content_rendered 的 PublicArticle 用于模板渲染
+        // 注意：将 &mut self 转换为 &self，因为 From<&MyArticle> 已实现
+        let mut public_article = PublicArticle::from(&*self);
+        public_article.content_rendered = Some(content_html.clone());
+
+        // 构建模板上下文（对标 Swift Template.render(article:) 的 context）
+        let public_planet = crate::models::planet::PublicPlanet::from(planet);
+        context.insert("planet", &public_planet);
+        context.insert("planet_ipns", &planet.ipns.as_ref());
+        context.insert("assets_prefix", "../");
+        context.insert("article_id", &self.id.to_string());  // Uuid 需要转换为 String
+        context.insert("article", &public_article);
+        context.insert("article_title", &self.title);
+        context.insert("page_title", &self.title);
+        context.insert("content_html", &content_html);
+        context.insert("style_css_sha256", &template.style_css_hash().unwrap_or_default());
+        context.insert("build_timestamp", &chrono::Utc::now().timestamp());
+
+        // 渲染 blog.html → index.html
+        let article_html = template.render_article(&context)
+            .with_context(|| format!("渲染文章 '{}' 失败", self.title))?;
+        let index_path = public_base.join("index.html");
+        fs::write(&index_path, article_html.as_bytes())
+            .with_context(|| format!("写入文章 HTML 失败: {:?}", index_path))?;
+
+        debug!("文章 '{}' 静态化完成: {:?}", self.title, index_path);
+
+        // 4. 写入 article.json
+        let info_path = public_base.join("article.json");
+        let info_json = serde_json::to_string_pretty(&public_article)?;
+        fs::write(&info_path, info_json.as_bytes())
+            .with_context(|| format!("写入 article.json 失败: {:?}", info_path))?;
+
+        // 5. 保存 article.md (原始 Markdown)
+        let md_path = public_base.join("article.md");
+        let md_content = format!("{}\n\n{}", self.title, self.content);
+        fs::write(&md_path, md_content.as_bytes())
+            .with_context(|| format!("写入 article.md 失败: {:?}", md_path))?;
+
+        Ok(())
     }
 }

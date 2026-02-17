@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ article_title }} - {{ planet.name }}</title>
+    <link rel="stylesheet" href="{{ assets_prefix }}assets/style.css?v={{ style_css_sha256 }}">
+</head>
+<body>
+    <header>
+        <a href="{{ assets_prefix }}">← {{ planet.name }}</a>
+    </header>
+    <main>
+        <article>
+            <h1>{{ article_title }}</h1>
+            <time>{{ article.created }}</time>
+            <div class="content">
+                {{ content_html | safe }}
+            </div>
+        </article>
+    </main>
+</body>
+</html>

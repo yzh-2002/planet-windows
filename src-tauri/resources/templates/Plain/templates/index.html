@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ planet.name }}</title>
+    <link rel="stylesheet" href="{{ assets_prefix }}assets/style.css?v={{ style_css_sha256 }}">
+    <link rel="alternate" type="application/rss+xml" title="{{ planet.name }}" href="rss.xml">
+</head>
+<body>
+    <header>
+        <h1>{{ planet.name }}</h1>
+        <p>{{ page_description_html | safe }}</p>
+    </header>
+    <main>
+        {% for article in articles %}
+        <article>
+            <h2><a href="{{ article.id }}/index.html">{{ article.title }}</a></h2>
+            <time>{{ article.created }}</time>
+            {% if article.contentRendered %}
+            <div class="summary">{{ article.contentRendered | safe | truncate(length=200) }}</div>
+            {% endif %}
+        </article>
+        {% endfor %}
+    </main>
+    {% if total_pages is defined and total_pages > 1 %}
+    <nav class="pagination">
+        {% if previous_page %}<a href="{{ previous_page }}">← Previous</a>{% endif %}
+        <span>Page {{ current_page }} of {{ total_pages }}</span>
+        {% if next_page %}<a href="{{ next_page }}">Next →</a>{% endif %}
+    </nav>
+    {% endif %}
+</body>
+</html>

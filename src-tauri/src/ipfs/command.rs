@@ -354,6 +354,14 @@ impl KuboCommand {
         }
     }
 
+    /// ipfs key list -l (显示 key 的 ID/IPNS 地址)
+    pub fn list_keys_with_id(app: AppHandle) -> Self {
+        Self {
+            app,
+            args: vec!["key".into(), "list".into(), "-l".into()],
+        }
+    }
+
     /// ipfs key export {name} -o {target} [--format={format}]
     pub fn export_key(app: AppHandle, name: &str, target: &str, format: Option<&str>) -> Self {
         let mut args = vec![

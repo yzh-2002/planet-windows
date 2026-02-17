@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import type { MyPlanet } from '../types/planet'
+import { IPFSStatusSidebar } from './IPFSStatusSidebar'
 
 interface SidebarProps {
   planets: MyPlanet[]
@@ -17,7 +18,7 @@ export function Sidebar({
   return (
     <div className="w-60 bg-gray-50 dark:bg-gray-900 border-r border-gray-200 dark:border-gray-700 flex flex-col h-full">
       {/* 头部 */}
-      <div className="p-4 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between">
+      <div className="p-4 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between shrink-0">
         <h2 className="text-sm font-semibold text-gray-600 dark:text-gray-400 uppercase tracking-wider">
           My Planets
         </h2>
@@ -49,7 +50,7 @@ export function Sidebar({
             >
               <div className="flex items-center gap-3">
                 {/* 头像占位 */}
-                <div className="w-8 h-8 rounded-full bg-gradient-to-br from-blue-400 to-purple-500 flex items-center justify-center text-white text-xs font-bold">
+                <div className="w-8 h-8 rounded-full bg-gradient-to-br from-blue-400 to-purple-500 flex items-center justify-center text-white text-xs font-bold shrink-0">
                   {planet.name.charAt(0).toUpperCase()}
                 </div>
                 <div className="flex-1 min-w-0">
@@ -65,6 +66,9 @@ export function Sidebar({
           ))
         )}
       </div>
+
+      {/* 底部 IPFS 状态 */}
+      <IPFSStatusSidebar />
     </div>
   )
 }

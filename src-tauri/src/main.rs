@@ -10,6 +10,7 @@ mod models;
 mod store;
 mod template;
 mod keystore;
+mod integrations;
 
 use std::sync::{Arc, Mutex};
 use tracing::info;
@@ -59,10 +60,23 @@ fn main() {
             commands::article::draft_save,
             commands::article::draft_delete,
             commands::article::draft_publish,
+
+            commands::planet::planet_publish,
+            commands::planet::planet_get_publish_state,
+            commands::planet::planet_update_filebase,
+            commands::planet::planet_update_pinnable,
+            commands::planet::planet_check_filebase_status,
         ])
         // 应用启动钩子
         .setup(move |app| {
             let app_handle = app.handle().clone(); 
+            
+            // 初始化模板：从资源目录复制到应用数据目录
+            let resource_dir = crate::helpers::paths::get_resource_dir(&app_handle);
+            let templates_dir = crate::helpers::paths::get_templates_path(&app_handle);
+            if let Err(e) = crate::template::TemplateStore::initialize_templates(&resource_dir, &templates_dir) {
+                tracing::warn!("初始化模板失败: {}", e);
+            }
             
             // 创建 IPFS 全局状态
             let ipfs_state: IpfsStateHandle = Arc::new(tokio::sync::Mutex::new(IpfsState::new(app_handle.clone())));

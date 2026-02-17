@@ -65,6 +65,29 @@ impl IpfsDaemon {
         // 创建一个临时的 KuboCommand 实例来获取 repo_path
         let cmd = KuboCommand::new(self.app.clone());
         let repo_path = cmd.repo_path();
+
+        // 0. 预清理：删除可能残留的锁文件和 api 文件
+        // 这可以防止因上次非正常退出导致的启动卡死
+        let lock_file = repo_path.join("repo.lock");
+        if lock_file.exists() {
+            warn!("Found stale repo.lock, removing...");
+            if let Err(e) = std::fs::remove_file(&lock_file) {
+                error!("Failed to remove repo.lock: {}", e);
+            } else {
+                info!("Removed stale repo.lock");
+            }
+        }
+
+        let api_file = repo_path.join("api");
+        if api_file.exists() {
+            warn!("Found stale api file, removing...");
+            if let Err(e) = std::fs::remove_file(&api_file) {
+                error!("Failed to remove api file: {}", e);
+            } else {
+                info!("Removed stale api file");
+            }
+        }
+
         let is_empty = if repo_path.exists() {
             std::fs::read_dir(&repo_path)
                 .map(|mut dir| dir.next().is_none())
@@ -239,14 +262,34 @@ impl IpfsDaemon {
     pub async fn shutdown(&mut self) -> Result<()> {
         info!("Shutting down IPFS daemon...");
 
+        // 如果没有 api_port，说明 daemon 可能根本没启动成功，直接尝试 kill 子进程
+        if self.api_port.is_none() {
+            warn!("API port not set, skipping CLI shutdown and trying to kill process directly...");
+            if let Some(mut child) = self.daemon_child.take() {
+                let _ = child.kill().await;
+                info!("Daemon process killed directly");
+            }
+            self.daemon_child = None;
+            info!("IPFS daemon shut down (forced)");
+            return Ok(());
+        }
+
         // 方法1: 通过 CLI 发送 shutdown 命令
-        let output = KuboCommand::shutdown_daemon(self.app.clone()).run();
+        // 使用 spawn_blocking 在后台线程执行同步命令，并添加超时
+        let app_handle = self.app.clone();
+        let shutdown_future = tokio::task::spawn_blocking(move || {
+            KuboCommand::shutdown_daemon(app_handle).run()
+        });
+
+        // 设置 5 秒超时
+        let output = tokio::time::timeout(Duration::from_secs(5), shutdown_future).await;
+
         match output {
-            Ok(o) if o.ret == 0 => {
+            Ok(Ok(Ok(o))) if o.ret == 0 => {
                 info!("Daemon shutdown via CLI successful");
             }
             _ => {
-                warn!("CLI shutdown failed, trying to kill process...");
+                warn!("CLI shutdown failed or timed out, trying to kill process...");
                 // 方法2: 直接 kill 子进程
                 if let Some(mut child) = self.daemon_child.take() {
                     let _ = child.kill().await;
@@ -313,8 +356,9 @@ impl IpfsDaemon {
         &self,
         path: &str,
         args: Option<&HashMap<String, String>>,
+        timeout_secs: Option<u64>,
     ) -> Result<T> {
-        let data = self.api(path, args, None).await?;
+        let data = self.api(path, args, timeout_secs).await?;
         let result = serde_json::from_slice(&data)?;
         Ok(result)
     }
@@ -342,29 +386,34 @@ impl IpfsDaemon {
     /// 获取带宽统计
     /// 对应 Swift: getStatsBW()
     pub async fn get_stats_bw(&self) -> Result<IpfsBandwidth> {
-        self.api_json("stats/bw", None).await
+        self.api_json("stats/bw", None, None).await
     }
 
     /// 获取 Server Info（聚合 id + version + swarm/peers）
     /// 对应 Swift: IPFSState.updateServerInfo()
     pub async fn get_server_info(&self) -> Result<ServerInfo> {
         // 获取 Peer ID
-        let id_info: IpfsId = self.api_json("id", None).await.unwrap_or(IpfsId {
+        let id_info: IpfsId = self.api_json("id", None, None).await.unwrap_or(IpfsId {
             id: String::new(),
             public_key: String::new(),
             addresses: vec![],
+            agent_version: String::new(),
+            protocol_version: String::new(),
+            protocols: vec![],
         });
 
         // 获取 IPFS 版本
         let version_info: IpfsVersion =
-            self.api_json("version", None).await.unwrap_or(IpfsVersion {
+            self.api_json("version", None, None).await.unwrap_or(IpfsVersion {
                 version: String::new(),
+                commit: String::new(),
                 repo: String::new(),
                 system: String::new(),
+                golang: String::new(),
             });
 
         // 获取 peers 数量
-        let peers_info: IpfsPeers = self.api_json("swarm/peers", None).await.unwrap_or(IpfsPeers {
+        let peers_info: IpfsPeers = self.api_json("swarm/peers", None, None).await.unwrap_or(IpfsPeers {
             peers: None,
         });
         let peer_count = peers_info.peers.as_ref().map_or(0, |p| p.len());
@@ -385,7 +434,7 @@ impl IpfsDaemon {
 
     /// 获取仓库大小
     pub async fn get_repo_size(&self) -> Result<i64> {
-        let repo_state: IpfsRepoState = self.api_json("repo/stat", None).await?;
+        let repo_state: IpfsRepoState = self.api_json("repo/stat", None, None).await?;
         Ok(repo_state.repo_size)
     }
 
@@ -404,7 +453,7 @@ impl IpfsDaemon {
     pub async fn resolve_ipns(&self, name: &str) -> Result<String> {
         let mut args = HashMap::new();
         args.insert("arg".into(), name.into());
-        let resolved: IpfsResolved = self.api_json("name/resolve", Some(&args)).await?;
+        let resolved: IpfsResolved = self.api_json("name/resolve", Some(&args), Some(60)).await?;
         if resolved.path.starts_with("/ipfs/") {
             Ok(resolved.path["/ipfs/".len()..].to_string())
         } else {
@@ -490,6 +539,26 @@ impl IpfsDaemon {
             Ok(keys.contains(&name))
         } else {
             Ok(false)
+        }
+    }
+
+    /// 获取 key 的 IPNS 地址
+    ///
+    /// 通过 `ipfs key list -l` 获取 key 的 ID（IPNS 地址）
+    pub fn get_key_ipns(&self, name: &str) -> Result<Option<String>> {
+        let output = KuboCommand::list_keys_with_id(self.app.clone()).run()?;
+        if output.ret == 0 {
+            // 输出格式：name  IPNS地址
+            // 例如：mykey  k51qzi5uqu5dibstm2yxidly22jx94embd7j3xjstfk65ulictn2ajnjvpiac7
+            for line in output.stdout.trim().lines() {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() >= 2 && parts[0] == name {
+                    return Ok(Some(parts[1].to_string()));
+                }
+            }
+            Ok(None)
+        } else {
+            Ok(None)
         }
     }
 

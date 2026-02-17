@@ -1,8 +1,8 @@
 import { useState, useCallback } from 'react'
-import { invoke } from '@tauri-apps/api/core'
 import { Sidebar } from './components/Sidebar'
 import { ArticleList } from './components/ArticleList'
 import { ArticleDetail } from './components/ArticleDetail'
+import { PlanetDetail } from './components/PlanetDetail'
 import { NewPlanetDialog } from './components/NewPlanetDialog'
 import { NewArticleDialog } from './components/NewArticleDialog'
 import { usePlanetStore, useArticles } from './hooks/usePlanetStore'
@@ -10,7 +10,7 @@ import type { MyArticle } from './types/planet'
 
 function App() {
   // 全局状态
-  const { myPlanets, loading: planetsLoading, createPlanet, deletePlanet } = usePlanetStore()
+  const { myPlanets, loading: planetsLoading, createPlanet } = usePlanetStore()
 
   // 选中状态
   const [selectedPlanetId, setSelectedPlanetId] = useState<string | null>(null)
@@ -93,12 +93,18 @@ function App() {
         />
       )}
 
-      {/* 右侧：文章详情 */}
+      {/* 右侧：文章详情或 Planet 详情 */}
       {selectedPlanetId ? (
-        <ArticleDetail
-          article={selectedArticle}
-          onDelete={handleDeleteArticle}
-        />
+        selectedArticle ? (
+          <ArticleDetail
+            article={selectedArticle}
+            onDelete={handleDeleteArticle}
+          />
+        ) : (
+          <PlanetDetail
+            planet={myPlanets.find((p) => p.id === selectedPlanetId)!}
+          />
+        )
       ) : (
         <div className="flex-1 flex items-center justify-center text-gray-400">
           <div className="text-center">
