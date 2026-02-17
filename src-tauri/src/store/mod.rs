@@ -1,13 +1,17 @@
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
+use tokio::time::{interval, Duration};
 use uuid::Uuid;
 use anyhow::{anyhow, Result};
-use tracing::{debug, error, info};
+use tracing::{error, info, warn};
 use tauri::{AppHandle, Emitter};
 
-use crate::models::planet::{MyPlanet, FollowingPlanet};
-use crate::models::article::{MyArticle, FollowingArticle};
+use crate::models::planet::MyPlanet;
+use crate::models::article::MyArticle;
 use crate::models::draft::Draft;
+use crate::models::following_planet::FollowingPlanet;
+use crate::models::following_article::FollowingArticle;
+use crate::ipfs::state::IpfsStateHandle;
 
 // ============================================================
 // SelectedView 枚举
@@ -64,10 +68,41 @@ impl PlanetStore {
         info!("Loaded {} my planets", self.my_planets.len());
 
         // 加载 Following Planets
-        self.following_planets = FollowingPlanet::load_all(app)?;
+        self.following_planets = self.load_following_planets(app);
         info!("Loaded {} following planets", self.following_planets.len());
 
         Ok(())
+    }
+
+    /// 加载所有 Following Planets
+    ///
+    /// 对标 Swift PlanetStore 中加载 Following 列表的逻辑
+    pub fn load_following_planets(&self, app: &AppHandle) -> Vec<FollowingPlanet> {
+        let base = FollowingPlanet::following_planets_path(app);
+        if !base.exists() {
+            return Vec::new();
+        }
+
+        let mut planets = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(&base) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    match FollowingPlanet::load(&path) {
+                        Ok(planet) => {
+                            info!("加载 Following Planet: {} ({})", planet.name, planet.id);
+                            planets.push(planet);
+                        }
+                        Err(e) => {
+                            warn!("加载 Following Planet 失败 {:?}: {}", path, e);
+                        }
+                    }
+                }
+            }
+        }
+
+        planets.sort_by(|a, b| b.updated.cmp(&a.updated));
+        planets
     }
 
     // ============================================================
@@ -254,18 +289,12 @@ impl PlanetStore {
     // Following Planet CRUD
     // ============================================================
 
-    /// 创建新的 Following Planet（Phase 4 完善 IPNS 解析逻辑）
-    pub fn follow_planet(
-        &mut self,
-        name: String,
-        about: String,
-        planet_type: crate::models::planet::PlanetType,
-        link: String,
-        app: &AppHandle,
-    ) -> Result<FollowingPlanet> {
-        let planet = FollowingPlanet::create(name, about, planet_type, link, app)?;
-        self.following_planets.insert(0, planet.clone());
-        Ok(planet)
+    /// 将已构建好的 FollowingPlanet 加入列表
+    ///
+    /// 实际的 follow 流程（IPNS 解析、ENS 解析等）在 FollowingPlanet::follow() 中异步完成，
+    /// 完成后调用此方法将结果加入内存列表。
+    pub fn add_following_planet(&mut self, planet: FollowingPlanet) {
+        self.following_planets.insert(0, planet);
     }
 
     /// 取消关注 Planet
@@ -280,11 +309,28 @@ impl PlanetStore {
         }
     }
 
+    /// 获取 Following Planet（不可变引用）
+    pub fn get_following_planet(&self, planet_id: Uuid) -> Option<&FollowingPlanet> {
+        self.following_planets.iter().find(|p| p.id == planet_id)
+    }
+
+    /// 获取 Following Planet（可变引用）
+    pub fn get_following_planet_mut(&mut self, planet_id: Uuid) -> Option<&mut FollowingPlanet> {
+        self.following_planets.iter_mut().find(|p| p.id == planet_id)
+    }
+
     /// 获取 Following Planet 的所有文章
-    pub fn list_following_articles(&self, planet_id: Uuid, app: &AppHandle) -> Result<Vec<FollowingArticle>> {
+    ///
+    /// 文章已在加载 Planet 时从磁盘读入内存 (planet.articles)
+    pub fn list_following_articles(&self, planet_id: Uuid) -> Result<Vec<FollowingArticle>> {
         let planet = self.following_planets.iter().find(|p| p.id == planet_id)
             .ok_or_else(|| anyhow!("Following planet not found: {}", planet_id))?;
-        FollowingArticle::load_all(planet, app)
+        Ok(planet.articles.clone())
+    }
+
+    /// 获取所有已关注链接（用于去重检查）
+    pub fn following_links(&self) -> Vec<String> {
+        self.following_planets.iter().map(|p| p.link.clone()).collect()
     }
 }
 
@@ -314,5 +360,100 @@ impl PlanetStore {
         if let Err(e) = app.emit("planet:state-changed", &snapshot) {
             error!("Failed to emit planet state: {}", e);
         }
+    }
+
+    /// 启动后台更新定时器
+    ///
+    /// 对标 Swift PlanetStore 的定时更新逻辑：
+    /// 定期遍历所有 Following Planet 并拉取更新。
+    ///
+    /// 由于 PlanetStore 使用 std::sync::Mutex，不能跨 .await 持有锁，
+    /// 因此采用 clone → update → write-back 策略。
+    ///
+    /// 由于 planet.update() 内部使用 scraper 等非 Send 类型，
+    /// 每个 planet 的更新通过 spawn_blocking + Handle::block_on 执行，
+    /// 避免 tokio::spawn 的 Send 约束问题。
+    pub fn start_background_updater(
+        store_handle: PlanetStoreHandle,
+        ipfs_state: IpfsStateHandle,
+        app_handle: AppHandle,
+    ) {
+        tauri::async_runtime::spawn(async move {
+            // 首次延迟 30 秒再开始，等待 IPFS daemon 完全就绪
+            tokio::time::sleep(Duration::from_secs(30)).await;
+
+            // 每 5 分钟更新一次（可配置）
+            let mut timer = interval(Duration::from_secs(5 * 60));
+
+            loop {
+                timer.tick().await;
+                info!("开始后台更新所有 Following Planets...");
+
+                // 1. 获取所有 planet 的 id（短暂持有 std::sync::Mutex）
+                let ids: Vec<Uuid> = {
+                    let store = store_handle.lock().unwrap();
+                    store.following_planets.iter().map(|p| p.id).collect()
+                };
+
+                for id in &ids {
+                    // 2. 克隆出目标 planet（短暂持有 std::sync::Mutex）
+                    let planet_opt = {
+                        let store = store_handle.lock().unwrap();
+                        store.following_planets.iter().find(|p| p.id == *id).cloned()
+                    };
+
+                    if let Some(planet) = planet_opt {
+                        // 3. 在 spawn_blocking 中执行异步更新
+                        //    planet.update() 使用了 scraper 等非 Send 类型，
+                        //    不能直接在 tokio::spawn 的 async block 中 .await，
+                        //    但 spawn_blocking 内可以通过 Handle::block_on 安全地运行。
+                        let ipfs_clone = ipfs_state.clone();
+                        let app_clone = app_handle.clone();
+                        let id_copy = *id;
+
+                        let result = tokio::task::spawn_blocking(move || {
+                            let handle = tokio::runtime::Handle::current();
+                            handle.block_on(async move {
+                                let mut planet = planet;
+                                let ipfs = ipfs_clone.lock().await;
+                                let result = planet.update(&ipfs.daemon, &app_clone).await;
+                                (planet, result)
+                            })
+                        })
+                        .await;
+
+                        match result {
+                            Ok((updated_planet, Ok(_))) => {
+                                info!("更新完成: {}", updated_planet.name);
+                                // 4. 将更新后的 planet 写回 store
+                                {
+                                    let mut store = store_handle.lock().unwrap();
+                                    if let Some(p) =
+                                        store.following_planets.iter_mut().find(|p| p.id == id_copy)
+                                    {
+                                        *p = updated_planet;
+                                    }
+                                }
+                                // 5. 通知前端
+                                let _ = app_handle.emit(
+                                    "following-updated",
+                                    serde_json::json!({
+                                        "id": id_copy.to_string(),
+                                    }),
+                                );
+                            }
+                            Ok((planet, Err(e))) => {
+                                warn!("更新失败 {}: {}", planet.name, e);
+                            }
+                            Err(e) => {
+                                error!("后台更新任务异常: {}", e);
+                            }
+                        }
+                    }
+                }
+
+                info!("后台更新完成");
+            }
+        });
     }
 }

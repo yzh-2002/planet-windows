@@ -66,6 +66,16 @@ fn main() {
             commands::planet::planet_update_filebase,
             commands::planet::planet_update_pinnable,
             commands::planet::planet_check_filebase_status,
+            // Phase 4 新增
+            commands::planet::planet_follow,
+            commands::planet::planet_unfollow,
+            commands::planet::following_list,
+            commands::planet::following_articles,
+            commands::planet::following_article_get,
+            commands::planet::following_update,
+            commands::planet::following_update_all,
+            commands::planet::following_article_mark_read,
+            commands::planet::following_article_mark_unread,
         ])
         // 应用启动钩子
         .setup(move |app| {
@@ -90,9 +100,16 @@ fn main() {
             // 注入全局状态
             app.manage(ipfs_state.clone());
             app.manage(planet_store_handle.clone());
-            let state = ipfs_state.clone();
+
+            // 启动后台更新定时器（Following Planets 已在 planet_store.load() 中加载）
+            PlanetStore::start_background_updater(
+                planet_store_handle.clone(),
+                ipfs_state.clone(),
+                app_handle.clone(),
+            );
 
             // 异步启动 IPFS daemon
+            let state = ipfs_state.clone();
             tauri::async_runtime::spawn(async move {
                 ipfs::state::auto_start(state, app_handle.clone()).await;
             });

@@ -37,3 +37,7 @@ keyring = "2"
 sha2 = "0.10"
 hex = "0.4"
 regex = "1"
+feed-rs = "1"
+scraper = "0.18"
+alloy = { version = "0.3", features = ["provider-http", "contract"] }
+url = "2"

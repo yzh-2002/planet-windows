@@ -1,10 +1,12 @@
-use tauri::State;
+use tauri::{AppHandle, Emitter, State};
 use uuid::Uuid;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 use crate::store::{PlanetStoreHandle, PlanetStoreSnapshot};
 use crate::models::planet::{MyPlanet, PublishState};
 use crate::ipfs::state::IpfsStateHandle;
+use crate::models::following_planet::{FollowingPlanet, FollowingPlanetSnapshot};
+use crate::models::following_article::FollowingArticleSnapshot;
 
 // ============================================================
 // 请求/响应类型
@@ -494,4 +496,310 @@ pub async fn planet_check_filebase_status(
     }
 
     Ok(None)
+}
+
+// ============================================================
+// 关注
+// ============================================================
+
+/// 关注一个 Planet / ENS / Feed
+///
+/// 由于 FollowingPlanet::follow() 内部使用 scraper 等非 Send 类型，
+/// 需要通过 spawn_blocking + Handle::block_on 执行异步操作。
+#[tauri::command]
+pub async fn planet_follow(
+    link: String,
+    app_handle: AppHandle,
+    store: State<'_, PlanetStoreHandle>,
+    ipfs_state: State<'_, IpfsStateHandle>,
+) -> Result<FollowingPlanetSnapshot, String> {
+    // 获取已关注链接（短暂持有 std::sync::Mutex）
+    let existing_links: Vec<String> = {
+        let store = store.lock().map_err(|e| e.to_string())?;
+        store.following_links()
+    };
+
+    // 在 spawn_blocking 中执行异步 follow（避免非 Send future 问题）
+    let ipfs_clone = ipfs_state.inner().clone();
+    let app_clone = app_handle.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let handle = tokio::runtime::Handle::current();
+        handle.block_on(async move {
+            let ipfs = ipfs_clone.lock().await;
+            FollowingPlanet::follow(&link, &existing_links, &ipfs.daemon, &app_clone).await
+        })
+    })
+    .await
+    .map_err(|e| format!("关注任务失败: {}", e))?;
+
+    let planet = result.map_err(|e| format!("关注失败: {}", e))?;
+    let snapshot = planet.snapshot(&app_handle);
+
+    // 加入 store
+    {
+        let mut store = store.lock().map_err(|e| e.to_string())?;
+        store.add_following_planet(planet);
+        store.emit_state_changed(&app_handle);
+    }
+
+    Ok(snapshot)
+}
+
+/// 取消关注
+#[tauri::command]
+pub fn planet_unfollow(
+    id: String,
+    app_handle: AppHandle,
+    store: State<'_, PlanetStoreHandle>,
+) -> Result<(), String> {
+    let uuid = Uuid::parse_str(&id).map_err(|e| e.to_string())?;
+    let mut store = store.lock().map_err(|e| e.to_string())?;
+    store.unfollow_planet(uuid, &app_handle).map_err(|e| e.to_string())?;
+    store.emit_state_changed(&app_handle);
+    Ok(())
+}
+
+// ============================================================
+// 列表查询
+// ============================================================
+
+/// 获取所有关注的 Planet 列表
+#[tauri::command]
+pub fn following_list(
+    app_handle: AppHandle,
+    store: State<'_, PlanetStoreHandle>,
+) -> Result<Vec<FollowingPlanetSnapshot>, String> {
+    let store = store.lock().map_err(|e| e.to_string())?;
+    Ok(store
+        .following_planets
+        .iter()
+        .map(|p| p.snapshot(&app_handle))
+        .collect())
+}
+
+/// 获取某个关注 Planet 的文章列表
+#[tauri::command]
+pub fn following_articles(
+    id: String,
+    store: State<'_, PlanetStoreHandle>,
+) -> Result<Vec<FollowingArticleSnapshot>, String> {
+    let uuid = Uuid::parse_str(&id).map_err(|e| e.to_string())?;
+    let store = store.lock().map_err(|e| e.to_string())?;
+
+    if let Some(planet) = store.following_planets.iter().find(|p| p.id == uuid) {
+        Ok(planet.articles.iter().map(|a| a.snapshot()).collect())
+    } else {
+        Err("未找到该 Planet".to_string())
+    }
+}
+
+/// 获取单篇文章详情
+#[tauri::command]
+pub fn following_article_get(
+    planet_id: String,
+    article_id: String,
+    app_handle: AppHandle,
+    store: State<'_, PlanetStoreHandle>,
+) -> Result<FollowingArticleSnapshot, String> {
+    let p_uuid = Uuid::parse_str(&planet_id).map_err(|e| e.to_string())?;
+    let a_uuid = Uuid::parse_str(&article_id).map_err(|e| e.to_string())?;
+
+    let mut store = store.lock().map_err(|e| e.to_string())?;
+    if let Some(planet) = store.following_planets.iter_mut().find(|p| p.id == p_uuid) {
+        let articles_dir = planet.articles_path(&app_handle);
+        if let Some(article) = planet.articles.iter_mut().find(|a| a.id == a_uuid) {
+            // 标记为已读
+            article.mark_as_read();
+            let _ = article.save(&articles_dir);
+            Ok(article.snapshot())
+        } else {
+            Err("未找到该文章".to_string())
+        }
+    } else {
+        Err("未找到该 Planet".to_string())
+    }
+}
+
+// ============================================================
+// 更新
+// ============================================================
+
+/// 更新单个 Following Planet
+///
+/// 采用 clone → spawn_blocking(update) → write-back 策略，
+/// 解决 std::sync::Mutex 不能跨 .await 和 scraper 非 Send 的问题。
+#[tauri::command]
+pub async fn following_update(
+    id: String,
+    app_handle: AppHandle,
+    store: State<'_, PlanetStoreHandle>,
+    ipfs_state: State<'_, IpfsStateHandle>,
+) -> Result<FollowingPlanetSnapshot, String> {
+    let uuid = Uuid::parse_str(&id).map_err(|e| e.to_string())?;
+
+    // 克隆 planet（短暂持有 std::sync::Mutex）
+    let planet = {
+        let store = store.lock().map_err(|e| e.to_string())?;
+        store
+            .following_planets
+            .iter()
+            .find(|p| p.id == uuid)
+            .cloned()
+            .ok_or_else(|| "未找到该 Planet".to_string())?
+    };
+
+    // 在 spawn_blocking 中执行异步更新
+    let ipfs_clone = ipfs_state.inner().clone();
+    let app_clone = app_handle.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let handle = tokio::runtime::Handle::current();
+        handle.block_on(async move {
+            let mut planet = planet;
+            let ipfs = ipfs_clone.lock().await;
+            let result = planet.update(&ipfs.daemon, &app_clone).await;
+            (planet, result)
+        })
+    })
+    .await
+    .map_err(|e| format!("更新任务失败: {}", e))?;
+
+    let (updated_planet, update_result) = result;
+    update_result.map_err(|e| format!("更新失败: {}", e))?;
+
+    let snapshot = updated_planet.snapshot(&app_handle);
+
+    // 写回 store
+    {
+        let mut store = store.lock().map_err(|e| e.to_string())?;
+        if let Some(p) = store.following_planets.iter_mut().find(|p| p.id == uuid) {
+            *p = updated_planet;
+        }
+    }
+
+    let _ = app_handle.emit(
+        "following-updated",
+        serde_json::json!({ "id": uuid.to_string() }),
+    );
+
+    Ok(snapshot)
+}
+
+/// 更新所有 Following Planets
+#[tauri::command]
+pub async fn following_update_all(
+    app_handle: AppHandle,
+    store: State<'_, PlanetStoreHandle>,
+    ipfs_state: State<'_, IpfsStateHandle>,
+) -> Result<(), String> {
+    // 获取所有 ID
+    let ids: Vec<Uuid> = {
+        let store = store.lock().map_err(|e| e.to_string())?;
+        store.following_planets.iter().map(|p| p.id).collect()
+    };
+
+    for id in ids {
+        // 克隆 planet
+        let planet_opt = {
+            let store = store.lock().map_err(|e| e.to_string())?;
+            store.following_planets.iter().find(|p| p.id == id).cloned()
+        };
+
+        if let Some(planet) = planet_opt {
+            let ipfs_clone = ipfs_state.inner().clone();
+            let app_clone = app_handle.clone();
+
+            let result = tokio::task::spawn_blocking(move || {
+                let handle = tokio::runtime::Handle::current();
+                handle.block_on(async move {
+                    let mut planet = planet;
+                    let ipfs = ipfs_clone.lock().await;
+                    let result = planet.update(&ipfs.daemon, &app_clone).await;
+                    (planet, result)
+                })
+            })
+            .await
+            .map_err(|e| format!("更新任务失败: {}", e))?;
+
+            match result {
+                (updated_planet, Ok(_)) => {
+                    // 写回 store
+                    {
+                        let mut store = store.lock().map_err(|e| e.to_string())?;
+                        if let Some(p) =
+                            store.following_planets.iter_mut().find(|p| p.id == id)
+                        {
+                            *p = updated_planet;
+                        }
+                    }
+                    let _ = app_handle.emit(
+                        "following-updated",
+                        serde_json::json!({
+                            "id": id.to_string(),
+                        }),
+                    );
+                }
+                (planet, Err(e)) => {
+                    tracing::warn!("更新失败 {}: {}", planet.name, e);
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+// ============================================================
+// 文章操作
+// ============================================================
+
+/// 标记文章为已读
+#[tauri::command]
+pub fn following_article_mark_read(
+    planet_id: String,
+    article_id: String,
+    app_handle: AppHandle,
+    store: State<'_, PlanetStoreHandle>,
+) -> Result<(), String> {
+    let p_uuid = Uuid::parse_str(&planet_id).map_err(|e| e.to_string())?;
+    let a_uuid = Uuid::parse_str(&article_id).map_err(|e| e.to_string())?;
+
+    let mut store = store.lock().map_err(|e| e.to_string())?;
+    if let Some(planet) = store.following_planets.iter_mut().find(|p| p.id == p_uuid) {
+        let articles_dir = planet.articles_path(&app_handle);
+        if let Some(article) = planet.articles.iter_mut().find(|a| a.id == a_uuid) {
+            article.mark_as_read();
+            article.save(&articles_dir).map_err(|e| e.to_string())?;
+            Ok(())
+        } else {
+            Err("未找到该文章".to_string())
+        }
+    } else {
+        Err("未找到该 Planet".to_string())
+    }
+}
+
+/// 标记文章为未读
+#[tauri::command]
+pub fn following_article_mark_unread(
+    planet_id: String,
+    article_id: String,
+    app_handle: AppHandle,
+    store: State<'_, PlanetStoreHandle>,
+) -> Result<(), String> {
+    let p_uuid = Uuid::parse_str(&planet_id).map_err(|e| e.to_string())?;
+    let a_uuid = Uuid::parse_str(&article_id).map_err(|e| e.to_string())?;
+
+    let mut store = store.lock().map_err(|e| e.to_string())?;
+    if let Some(planet) = store.following_planets.iter_mut().find(|p| p.id == p_uuid) {
+        let articles_dir = planet.articles_path(&app_handle);
+        if let Some(article) = planet.articles.iter_mut().find(|a| a.id == a_uuid) {
+            article.mark_as_unread();
+            article.save(&articles_dir).map_err(|e| e.to_string())?;
+            Ok(())
+        } else {
+            Err("未找到该文章".to_string())
+        }
+    } else {
+        Err("未找到该 Planet".to_string())
+    }
 }
